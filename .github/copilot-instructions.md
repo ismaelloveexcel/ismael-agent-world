@@ -1,34 +1,40 @@
 # Copilot Instructions — ismael-agent-world
 
 ## Project
-Private animated multi-agent AI command center. Universal task routing, dynamic agents, memory, playbooks, approvals, and execution logs.
+Private animated multi-agent AI command center. Universal and domain-agnostic. Phase 1: animated dashboard shell only — no real external actions.
 
 ## Owner
-Solo founder (Ismael). Zero manual intervention. Every feature must be autonomous, low-touch, and scalable.
+Solo founder (Ismael). Zero manual intervention. Premium quality only.
 
 ## Stack
-Next.js App Router | TypeScript | Supabase | Tailwind CSS | Vercel | Lemon Squeezy
+Next.js 15 App Router | TypeScript (strict) | Tailwind CSS | shadcn/ui components | Framer Motion | Supabase-ready | Lemon Squeezy
+
+## Pages
+/command | /agents | /projects | /memory | /playbooks | /approvals | /logs
+
+## Agents (9 core, mock/seed data)
+Chief Agent → Intent Router → Knowledge Agent → Playbook Agent → Dynamic Agent Generator → Builder Agent → Critic/QA Agent → Memory Agent → Approval Agent
+
+## Agent States
+idle | thinking | retrieving_memory | selecting_playbook | generating_agent | building_output | reviewing | waiting_approval | completed | failed
 
 ## Rules
-- Always TypeScript, never `any`
-- All agents are modular — each in its own file/module
-- Memory layer via Supabase (pgvector preferred)
-- Playbooks = reusable JSON task templates
-- Approvals = async human-in-the-loop checkpoints before destructive actions
-- Execution logs = append-only Supabase table
-- Animations: Framer Motion only
-- Payments: Lemon Squeezy (reuse shared payments package)
-- Auth: Supabase Auth
-- All secrets via environment variables, never hardcoded
+- TypeScript strict mode, never `any`
+- Animations via Framer Motion only, tied to agent state
+- All data is mock/seed — no real external API calls in Phase 1
+- Risky actions create approval records, never execute
+- No TODO comments, no empty pages, no console errors
+- Premium dark UI — NOT a generic admin dashboard
+- Particle/neural animated background on /command
+- Agent handoff lines animated between nodes
 
-## Agent Architecture
-- Router Agent: classifies incoming tasks → routes to specialist agent
-- Each specialist agent: input schema, output schema, Supabase memory read/write
-- Playbook engine: loads JSON playbook → executes steps sequentially with checkpoint support
-- Approval gate: pauses execution, notifies operator, resumes on confirm
+## TypeScript types (all required)
+Agent | DynamicAgent | Project | Task | TaskPacket | AgentRun | Memory | Playbook | Approval | ExecutionLog | ToolRegistryItem
 
-## Code style
-- Components: default export, PascalCase
-- Utilities: named export, camelCase
-- Database: snake_case columns
-- API routes: /api/agents/[agentId], /api/tasks, /api/playbooks, /api/logs
+## File structure
+- /agents/* — agent logic modules
+- /components/agents/* — agent UI components
+- /components/ui/* — shadcn-style primitives
+- /lib/mock/* — all mock data
+- /lib/types.ts — all TypeScript types
+- /app/command | /agents | /projects | /memory | /playbooks | /approvals | /logs
