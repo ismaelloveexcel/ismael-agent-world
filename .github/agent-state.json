@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "phase": 1,
+  "completed_tasks": [],
+  "in_progress": null,
+  "open_prs": [],
+  "last_run": null,
+  "total_runs": 0,
+  "notes": "Orchestrator state — updated automatically after each run."
+}
