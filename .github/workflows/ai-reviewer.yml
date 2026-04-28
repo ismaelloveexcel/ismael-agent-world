@@ -1,0 +1,70 @@
+name: AI Code Reviewer
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        id: diff
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD -- "*.ts" "*.tsx" "*.js" "*.json" > /tmp/pr_diff.txt
+          # Truncate to 8000 chars to fit context
+          head -c 8000 /tmp/pr_diff.txt > /tmp/diff_truncated.txt
+          echo "diff_content<<ENDDIFF" >> $GITHUB_OUTPUT
+          cat /tmp/diff_truncated.txt >> $GITHUB_OUTPUT
+          echo "ENDDIFF" >> $GITHUB_OUTPUT
+
+      - name: Claude review
+        id: claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          DIFF=$(cat /tmp/diff_truncated.txt | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+          
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d "{
+              \"model\": \"claude-haiku-4-5-20251001\",
+              \"max_tokens\": 1024,
+              \"messages\": [{
+                \"role\": \"user\",
+                \"content\": \"You are a senior TypeScript/Next.js engineer reviewing a PR for ismael-agent-world — a private animated multi-agent AI command center. Stack: Next.js 15, TypeScript (strict), Tailwind, Framer Motion, Supabase.\\n\\nReview this diff and give concise, actionable feedback. Focus on: type safety, agent architecture correctness, animation best practices, potential bugs, missing error handling. Be direct. Max 400 words. Format with ### sections.\\n\\nDiff:\\n\" + $DIFF
+              }]
+            }")
+          
+          REVIEW=$(echo "$RESPONSE" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          text = d.get('content', [{}])[0].get('text', 'Review unavailable')
+          print(text)
+          ")
+          
+          echo "review<<ENDREVIEW" >> $GITHUB_OUTPUT
+          echo "$REVIEW" >> $GITHUB_OUTPUT
+          echo "ENDREVIEW" >> $GITHUB_OUTPUT
+
+      - name: Post review comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const review = `${{ steps.claude.outputs.review }}`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## 🤖 AI Code Review\n\n${review}\n\n---\n*Reviewed by Claude (ismael-agent-world AI reviewer)*`
+            });
