@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 """
-Ismael Agent World — Autonomous Orchestrator
-Multi-model: Claude (code), GPT-4o (planning), Grok (ideation/inspiration)
-Auto-merges on CI pass. Zero manual intervention required.
+Ismael Agent World — Autonomous Orchestrator v2
+Flow:
+  1. Read blueprint + codebase
+  2. If no master plan → GPT-4o plans → Claude validates → save BUILD_PLAN.md
+  3. Guard: if any agent PR is still open → wait (gatekeeper must merge it first)
+  4. Pick next pending task from plan
+  5. GPT-4o reviews approach → Claude writes code → GPT-4o complexity check
+  6. If complexity > 7/10 → Claude simplifies
+  7. Push branch + open PR (gatekeeper reviews before merge)
+  8. On merge → orchestrator re-triggers automatically (see orchestrator.yml)
+  9. Repeat until all tasks complete
 """
 
-import os, sys, json, time, re, requests
-from datetime import datetime, timezone
+import os, sys, json, re, time, requests
+from datetime import datetime, timezone, date
 from pathlib import Path
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -19,89 +27,74 @@ REPO_NAME         = os.environ.get("REPO_NAME", "ismael-agent-world")
 FOCUS_INPUT       = os.environ.get("FOCUS_INPUT", "").strip()
 PHASE_INPUT       = os.environ.get("PHASE_INPUT", "1").strip()
 
-# Model routing — each model used for what it's best at:
-# Grok      → GitHub inspiration scraping, creative ideation
-# GPT-4o    → Task planning, PR description, QA review pass
-# Claude    → Full TypeScript/Next.js code generation (primary engine)
-CLAUDE_MODEL   = "claude-sonnet-4-6"
-OPENAI_MODEL   = "gpt-4o"
-GROK_MODEL     = "grok-3-fast"
+CLAUDE_MODEL  = "claude-sonnet-4-6"
+OPENAI_MODEL  = "gpt-4o"
+GROK_MODEL    = "grok-3-fast"
 
-STATE_PATH     = ".github/agent-state.json"
-BLUEPRINT_PATH = "BLUEPRINT.md"
-GH_API         = "https://api.github.com"
-ANTHROPIC_API  = "https://api.anthropic.com/v1/messages"
-OPENAI_API     = "https://api.openai.com/v1/chat/completions"
-GROK_API       = "https://api.x.ai/v1/chat/completions"
+BUILD_PLAN_PATH = ".github/BUILD_PLAN.md"
+STATE_PATH      = ".github/agent-state.json"
+BLUEPRINT_PATH  = "BLUEPRINT.md"
 
-IGNORE_DIRS = {".git", "node_modules", ".next", "dist", "build", ".github"}
+MAX_FILES_PER_PR   = 8
+MAX_LINES_PER_PR   = 400
+COMPLEXITY_LIMIT   = 7   # out of 10 — above this, Claude simplifies before PR
+MAX_LINES_PER_FILE = 200
+
+GH_API        = "https://api.github.com"
+ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
+OPENAI_API    = "https://api.openai.com/v1/chat/completions"
+GROK_API_URL  = "https://api.x.ai/v1/chat/completions"
+
+IGNORE_DIRS = {".git","node_modules",".next","dist","build",".github"}
 IGNORE_EXTS = {".jpg",".jpeg",".png",".gif",".ico",".lock",".map",".woff",".woff2",".ttf",".eot"}
 
 # ── Model Clients ────────────────────────────────────────────────────────────
 
 def call_claude(prompt: str, system: str, max_tokens: int = 8000) -> str:
-    """Claude Sonnet — primary code generation engine."""
     resp = requests.post(ANTHROPIC_API, headers={
         "x-api-key": ANTHROPIC_API_KEY,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
-    }, json={
-        "model": CLAUDE_MODEL, "max_tokens": max_tokens,
-        "system": system,
-        "messages": [{"role": "user", "content": prompt}],
-    }, timeout=120)
+    }, json={"model": CLAUDE_MODEL, "max_tokens": max_tokens, "system": system,
+             "messages": [{"role": "user", "content": prompt}]}, timeout=120)
     resp.raise_for_status()
     return resp.json()["content"][0]["text"]
 
-def call_openai(prompt: str, system: str, model: str = None, max_tokens: int = 1500) -> str:
-    """GPT-4o — planning, QA, PR descriptions."""
-    if not OPENAI_API_KEY:
-        return ""
+def call_openai(prompt: str, system: str, max_tokens: int = 1000) -> str:
+    if not OPENAI_API_KEY: return ""
     resp = requests.post(OPENAI_API, headers={
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }, json={
-        "model": model or OPENAI_MODEL, "max_tokens": max_tokens,
-        "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-    }, timeout=60)
-    if resp.status_code != 200:
-        return ""
+        "Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"
+    }, json={"model": OPENAI_MODEL, "max_tokens": max_tokens,
+             "messages": [{"role":"system","content":system},{"role":"user","content":prompt}]}, timeout=60)
+    if resp.status_code != 200: return ""
     return resp.json()["choices"][0]["message"]["content"]
 
-def call_grok(prompt: str, system: str, max_tokens: int = 1000) -> str:
-    """Grok — creative ideation and GitHub inspiration analysis."""
-    if not GROK_API_KEY:
-        return ""
-    resp = requests.post(GROK_API, headers={
-        "Authorization": f"Bearer {GROK_API_KEY}",
-        "Content-Type": "application/json",
-    }, json={
-        "model": GROK_MODEL, "max_tokens": max_tokens,
-        "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-    }, timeout=60)
-    if resp.status_code != 200:
-        return ""
+def call_grok(prompt: str, system: str, max_tokens: int = 800) -> str:
+    if not GROK_API_KEY: return ""
+    resp = requests.post(GROK_API_URL, headers={
+        "Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"
+    }, json={"model": GROK_MODEL, "max_tokens": max_tokens,
+             "messages": [{"role":"system","content":system},{"role":"user","content":prompt}]}, timeout=60)
+    if resp.status_code != 200: return ""
     return resp.json()["choices"][0]["message"]["content"]
 
 # ── GitHub Helpers ───────────────────────────────────────────────────────────
 
-def gh_headers():
-    return {"Authorization": f"token {GH_PAT}", "Accept": "application/vnd.github.v3+json"}
+def gh(method: str, path: str, **kwargs):
+    headers = {"Authorization": f"token {GH_PAT}", "Accept": "application/vnd.github.v3+json"}
+    return requests.request(method, f"{GH_API}/{path}", headers=headers, timeout=30, **kwargs)
 
 def load_state() -> dict:
     if Path(STATE_PATH).exists():
         return json.loads(Path(STATE_PATH).read_text())
-    return {"version":1,"phase":1,"completed_tasks":[],"open_prs":[],"last_run":None,"total_runs":0}
-
-def save_state_to_repo(state: dict):
-    Path(STATE_PATH).write_text(json.dumps(state, indent=2))
-    content = json.dumps(state, indent=2)
-    push_files_to_branch("main",
-        [{"path": STATE_PATH, "content": content}],
-        f"chore: orchestrator state run #{state.get('total_runs',0)}")
+    return {"version":2,"phase":1,"completed_tasks":[],"open_prs":[],"last_run":None,
+            "total_runs":0,"plan_created":False}
 
 def read_blueprint() -> str:
     return Path(BLUEPRINT_PATH).read_text() if Path(BLUEPRINT_PATH).exists() else ""
+
+def read_build_plan() -> str:
+    return Path(BUILD_PLAN_PATH).read_text() if Path(BUILD_PLAN_PATH).exists() else ""
 
 def scan_codebase() -> str:
     lines = []
@@ -111,293 +104,329 @@ def scan_codebase() -> str:
             if any(f.endswith(e) for e in IGNORE_EXTS): continue
             rel = os.path.join(root, f).lstrip("./")
             try:
-                content = Path(root, f).read_text(errors="ignore").splitlines()[:50]
+                content = Path(root,f).read_text(errors="ignore").splitlines()[:40]
                 lines.append(f"### {rel}\n" + "\n".join(content))
             except: pass
-    return "\n\n".join(lines[:35])
+    return "\n\n".join(lines[:30])
 
 def get_open_prs() -> list:
-    resp = requests.get(f"{GH_API}/repos/{REPO_OWNER}/{REPO_NAME}/pulls?state=open", headers=gh_headers())
-    return [{"number": p["number"], "title": p["title"], "branch": p["head"]["ref"]}
-            for p in resp.json()]
+    resp = gh("GET", f"repos/{REPO_OWNER}/{REPO_NAME}/pulls?state=open")
+    return [{"number":p["number"],"title":p["title"],"branch":p["head"]["ref"],
+             "created_at":p["created_at"]} for p in resp.json()]
 
-def search_github_inspiration(codebase_str: str) -> str:
-    """Use Grok to ideate on architecture, plus GitHub search for patterns."""
-    grok_ideation = ""
-    if GROK_API_KEY:
-        grok_ideation = call_grok(
-            f"We are building a premium animated multi-agent AI command center in Next.js 15. "
-            f"Current files: {codebase_str[:500]}. "
-            f"What are the most impressive architectural patterns or UI tricks used in top open-source AI dashboards? "
-            f"Give 3 specific ideas that would make this feel premium. Be concise.",
-            "You are a creative senior engineer and product designer specializing in AI tooling UIs.",
-            max_tokens=600
-        )
+def get_agent_open_prs(open_prs: list) -> list:
+    """Return only agent-opened PRs (branch starts with agent/)."""
+    return [p for p in open_prs if p.get("branch","").startswith("agent/")]
 
-    # GitHub API search
-    resp = requests.get(f"{GH_API}/search/repositories", headers=gh_headers(),
-        params={"q": "multi-agent nextjs dashboard framer-motion", "sort": "stars", "per_page": 3})
-    gh_results = ""
-    if resp.status_code == 200:
-        items = resp.json().get("items", [])
-        for r in items[:3]:
-            gh_results += f"\n- {r['full_name']} ({r['stargazers_count']}★): {r.get('description','')}"
+def check_all_tasks_done(plan: str, completed_tasks: list) -> bool:
+    """Check if every task in the plan is in the completed list."""
+    completed_names = {t.get("task","").lower() for t in completed_tasks}
+    task_lines = [l for l in plan.splitlines() if l.startswith("## Task")]
+    if not task_lines:
+        return False
+    matched = sum(1 for tl in task_lines
+                  if any(cn in tl.lower() for cn in completed_names))
+    return matched >= len(task_lines)
 
-    return f"Grok ideation:\n{grok_ideation}\n\nGitHub similar projects:{gh_results}"
+def get_branch_sha(branch="main") -> str:
+    resp = gh("GET", f"repos/{REPO_OWNER}/{REPO_NAME}/git/refs/heads/{branch}")
+    return resp.json()["object"]["sha"]
 
-def create_branch(branch_name: str) -> str:
-    resp = requests.get(f"{GH_API}/repos/{REPO_OWNER}/{REPO_NAME}/git/refs/heads/main", headers=gh_headers())
-    sha = resp.json()["object"]["sha"]
-    r = requests.post(f"{GH_API}/repos/{REPO_OWNER}/{REPO_NAME}/git/refs",
-        headers=gh_headers(), json={"ref": f"refs/heads/{branch_name}", "sha": sha})
-    if r.status_code not in [201, 422]:
-        print(f"Branch create: {r.status_code} {r.text[:200]}")
-    return sha
+def create_branch(branch_name: str):
+    sha = get_branch_sha("main")
+    gh("POST", f"repos/{REPO_OWNER}/{REPO_NAME}/git/refs",
+       json={"ref": f"refs/heads/{branch_name}", "sha": sha})
 
 def push_files_to_branch(branch: str, files: list, commit_msg: str):
-    resp = requests.get(f"{GH_API}/repos/{REPO_OWNER}/{REPO_NAME}/git/refs/heads/{branch}", headers=gh_headers())
-    if resp.status_code != 200: return
-    branch_sha = resp.json()["object"]["sha"]
-
-    commit_resp = requests.get(f"{GH_API}/repos/{REPO_OWNER}/{REPO_NAME}/git/commits/{branch_sha}", headers=gh_headers())
+    branch_sha = get_branch_sha(branch)
+    commit_resp = gh("GET", f"repos/{REPO_OWNER}/{REPO_NAME}/git/commits/{branch_sha}")
     base_tree_sha = commit_resp.json()["tree"]["sha"]
 
     tree_items = []
     for f in files:
-        blob = requests.post(f"{GH_API}/repos/{REPO_OWNER}/{REPO_NAME}/git/blobs",
-            headers=gh_headers(), json={"content": f["content"], "encoding": "utf-8"})
-        tree_items.append({"path": f["path"], "mode": "100644", "type": "blob", "sha": blob.json()["sha"]})
+        blob = gh("POST", f"repos/{REPO_OWNER}/{REPO_NAME}/git/blobs",
+                  json={"content": f["content"], "encoding": "utf-8"})
+        tree_items.append({"path":f["path"],"mode":"100644","type":"blob","sha":blob.json()["sha"]})
 
-    tree = requests.post(f"{GH_API}/repos/{REPO_OWNER}/{REPO_NAME}/git/trees",
-        headers=gh_headers(), json={"base_tree": base_tree_sha, "tree": tree_items})
-    new_tree_sha = tree.json()["sha"]
+    tree = gh("POST", f"repos/{REPO_OWNER}/{REPO_NAME}/git/trees",
+              json={"base_tree":base_tree_sha,"tree":tree_items})
+    commit = gh("POST", f"repos/{REPO_OWNER}/{REPO_NAME}/git/commits",
+                json={"message":commit_msg,"tree":tree.json()["sha"],"parents":[branch_sha]})
+    gh("PATCH", f"repos/{REPO_OWNER}/{REPO_NAME}/git/refs/heads/{branch}",
+       json={"sha":commit.json()["sha"]})
 
-    commit = requests.post(f"{GH_API}/repos/{REPO_OWNER}/{REPO_NAME}/git/commits",
-        headers=gh_headers(), json={"message": commit_msg, "tree": new_tree_sha, "parents": [branch_sha]})
-    new_commit_sha = commit.json()["sha"]
+def push_to_main(files: list, commit_msg: str):
+    push_files_to_branch("main", files, commit_msg)
 
-    requests.patch(f"{GH_API}/repos/{REPO_OWNER}/{REPO_NAME}/git/refs/heads/{branch}",
-        headers=gh_headers(), json={"sha": new_commit_sha})
-
-def create_pr_with_automerge(branch: str, title: str, body: str) -> dict:
-    # Enable auto-merge on repo (requires admin)
-    requests.patch(f"{GH_API}/repos/{REPO_OWNER}/{REPO_NAME}",
-        headers=gh_headers(), json={"allow_auto_merge": True, "allow_squash_merge": True})
-
-    # Create PR
-    pr_resp = requests.post(f"{GH_API}/repos/{REPO_OWNER}/{REPO_NAME}/pulls",
-        headers=gh_headers(), json={"title": title, "body": body, "head": branch, "base": "main"})
-    pr = pr_resp.json()
-    pr_num = pr.get("number", 0)
-
-    if not pr_num:
-        print(f"PR creation failed: {pr_resp.text[:300]}")
-        return pr
-
-    # Add labels
-    requests.post(f"{GH_API}/repos/{REPO_OWNER}/{REPO_NAME}/issues/{pr_num}/labels",
-        headers=gh_headers(), json={"labels": ["agent", "ai-task"]})
-
-    # Enable auto-merge via GraphQL
-    node_id = pr.get("node_id", "")
-    if node_id:
-        gql_query = """
-        mutation EnableAutoMerge($pullRequestId: ID!) {
-          enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId, mergeMethod: SQUASH}) {
-            pullRequest { autoMergeRequest { enabledAt } }
-          }
-        }"""
-        gql_resp = requests.post("https://api.github.com/graphql",
-            headers={"Authorization": f"Bearer {GH_PAT}", "Content-Type": "application/json"},
-            json={"query": gql_query, "variables": {"pullRequestId": node_id}})
-        if gql_resp.status_code == 200 and not gql_resp.json().get("errors"):
-            print(f"   ✅ Auto-merge enabled on PR #{pr_num}")
-        else:
-            print(f"   ⚠️  Auto-merge not available (branch protection may need required checks). Manual merge needed.")
-
+def create_pr(branch: str, title: str, body: str) -> dict:
+    pr = gh("POST", f"repos/{REPO_OWNER}/{REPO_NAME}/pulls",
+            json={"title":title,"body":body,"head":branch,"base":"main"}).json()
+    if pr.get("number"):
+        gh("POST", f"repos/{REPO_OWNER}/{REPO_NAME}/issues/{pr['number']}/labels",
+           json={"labels":["agent","ai-task"]})
     return pr
 
-def parse_json_response(text: str) -> dict:
-    match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
-    if match: return json.loads(match.group(1))
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match: return json.loads(match.group(0))
-    raise ValueError("No JSON in response")
+def parse_json(text: str) -> dict:
+    m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+    if m: return json.loads(m.group(1))
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m: return json.loads(m.group(0))
+    raise ValueError("No JSON found")
 
-# ── Main Pipeline ────────────────────────────────────────────────────────────
+# ── Step 1: Master Plan Creation ─────────────────────────────────────────────
 
-def main():
-    print("=== Ismael Agent World — Orchestrator ===")
-    print(f"Models: Claude ({CLAUDE_MODEL}) | OpenAI ({OPENAI_MODEL}) | Grok ({GROK_MODEL})")
+def create_master_plan(blueprint: str, codebase: str) -> str:
+    print("\n📋 No master plan found. Creating one...")
 
-    state       = load_state()
-    blueprint   = read_blueprint()
-    codebase    = scan_codebase()
-    open_prs    = get_open_prs()
+    # GPT-4o plans
+    print("   GPT-4o: generating plan...")
+    gpt_plan = call_openai(f"""
+Blueprint:
+{blueprint[:5000]}
 
-    if len(open_prs) >= 4:
-        print(f"⏸  {len(open_prs)} PRs open. Pausing. Auto-merge should clear these via CI.")
-        sys.exit(0)
+Current codebase:
+{codebase[:1500]}
 
-    # ── Step 1: Grok ideation (creative spark) ────────────────────────────────
-    print("\n🔮 Step 1: Grok — creative ideation + GitHub inspiration...")
-    inspiration = search_github_inspiration(codebase)
-    print(inspiration[:400])
+Create a detailed build plan for Phase 1 and Phase 2.
+Rules:
+- Max 8 files per PR, max 400 lines total per PR
+- Start with: tsconfig, package.json, types, mock data, layout
+- Then: shared components, then individual pages
+- Each task must be self-contained and deployable
+- Solo non-technical user — keep everything simple, no over-engineering
+- Format each task as: ## Task N: <name> | Phase: <1|2> | Files: <list> | Depends on: <task N>
 
-    # ── Step 2: GPT-4o planning (what to build next) ──────────────────────────
-    print("\n🧠 Step 2: GPT-4o — task planning...")
-    completed_str = json.dumps(state.get("completed_tasks", [])[-5:], indent=2)  # last 5
-    open_prs_str  = json.dumps(open_prs, indent=2)
-    focus_str     = f"User focus: {FOCUS_INPUT}" if FOCUS_INPUT else ""
+Output 20-25 tasks covering Phase 1 fully and Phase 2 outline.
+""", "You are a senior Next.js architect creating a build plan for a solo developer. Be specific and practical.", max_tokens=3000)
 
-    planning_prompt = f"""
-Blueprint summary (first 3000 chars):
+    # Claude validates
+    print("   Claude: validating plan...")
+    validated = call_claude(f"""
+Review this build plan for Ismael Agent World.
+
+Blueprint requirements:
 {blueprint[:3000]}
 
-Current codebase files:
-{codebase[:2000]}
+Proposed plan:
+{gpt_plan}
 
-Completed tasks (last 5):
-{completed_str}
+Validate and improve this plan:
+1. Are the tasks in the right order (dependencies respected)?
+2. Is anything too complex for a solo non-technical user?
+3. Are any tasks too large for one PR (>8 files or >400 lines)?
+4. Is anything missing from Phase 1 requirements?
+5. Are shared components built before pages that use them?
 
-Open PRs:
-{open_prs_str}
+Output the corrected, final plan in the same format. Add a ## Summary section at the top with total tasks and estimated PRs.
+""",
+    "You are a TypeScript/Next.js expert validating a build plan. Be thorough but practical.",
+    max_tokens=4000)
 
-{focus_str}
+    # Grok adds creative perspective
+    grok_note = call_grok(
+        f"Build plan summary:\n{gpt_plan[:800]}\n\nAny architectural risk or simplification that would make this more robust for a solo developer? 3 bullet points max.",
+        "You are a pragmatic senior engineer reviewing a build plan.", max_tokens=300)
 
-Phase: {PHASE_INPUT}
+    plan_content = f"""# Ismael Agent World — Master Build Plan
+Generated: {datetime.now(timezone.utc).isoformat()}
+By: GPT-4o (planning) → Claude (validation) → Grok (risk review)
 
-What is the single most important next task to build? Consider what's missing vs the blueprint.
-Reply in 3 sentences: 1) what to build, 2) why it's most important now, 3) which files to create/edit.
+## Grok Risk Notes
+{grok_note}
+
+---
+
+{validated}
+
+---
+*This plan is updated automatically as tasks complete. Do not edit manually.*
 """
-    planning_result = call_openai(planning_prompt,
-        "You are a senior product engineer planning the next sprint task for an AI command center app.",
-        max_tokens=500)
-    if planning_result:
-        print(f"   GPT-4o plan: {planning_result[:300]}")
-    else:
-        print("   GPT-4o unavailable — Claude will self-plan.")
+    return plan_content
 
-    # ── Step 3: Claude code generation (primary engine) ───────────────────────
-    print(f"\n⚡ Step 3: Claude {CLAUDE_MODEL} — code generation...")
+# ── Step 2: Task Selection ────────────────────────────────────────────────────
 
-    code_system = """You are an expert autonomous TypeScript/Next.js engineer building Ismael Agent World.
-Rules:
-- Generate complete, working, production-quality code. No TODOs, no placeholders.
-- TypeScript strict mode. No `any`. Full type safety.
-- Next.js 15 App Router patterns.
-- Framer Motion for ALL animations — tied to agent state, not decorative.
-- Mock/seed data only in Phase 1. No real API calls.
-- shadcn/ui component patterns with Tailwind.
-- Premium dark UI: deep navy/slate backgrounds, teal/blue accents, never generic admin look.
-- Output ONLY valid JSON in the exact format requested. No commentary outside the JSON."""
+def pick_next_task(plan: str, completed_tasks: list, codebase: str, focus: str) -> dict:
+    completed_names = [t.get("task","") for t in completed_tasks]
+    completed_str   = "\n".join(f"- {n}" for n in completed_names) or "None yet"
 
-    code_prompt = f"""
-BLUEPRINT (full):
-{blueprint[:10000]}
+    result = call_openai(f"""
+Build plan:
+{plan[:4000]}
 
-CURRENT CODEBASE:
-{codebase[:3000]}
-
-COMPLETED TASKS:
+Completed tasks:
 {completed_str}
 
-GPT-4o PLANNING INPUT:
-{planning_result or "Self-determine based on blueprint and codebase state."}
+Current codebase files:
+{codebase[:1000]}
 
-INSPIRATION:
-{inspiration[:800]}
+User focus (if any): {focus or "none — auto-select"}
+Phase to work on: {PHASE_INPUT}
 
-Build the next task. Generate ALL file contents completely.
+Which task should be done next?
+- Must not duplicate completed tasks
+- Must have all dependencies already done
+- Must be Phase {PHASE_INPUT} if possible
+- If user specified focus, prioritize that area
 
-Respond ONLY with this JSON:
+Reply with JSON only:
 ```json
 {{
-  "task_name": "Short task name",
-  "rationale": "Why this is the most important next step",
-  "branch_name": "agent/ph{PHASE_INPUT}-<slug>",
-  "pr_title": "[Agent Ph{PHASE_INPUT}] <title>",
-  "commit_message": "feat: <message>",
+  "task_number": 5,
+  "task_name": "Task name from plan",
+  "why_now": "One sentence reason",
+  "files_to_create": ["list", "of", "file", "paths"],
+  "depends_on_done": true
+}}
+```
+""", "You are a project manager selecting the next development task. Be decisive.", max_tokens=600)
+
+    try:
+        return parse_json(result)
+    except:
+        return {"task_number": 0, "task_name": "Auto-selected", "why_now": "No plan found",
+                "files_to_create": [], "depends_on_done": True}
+
+# ── Step 3: Code Generation ──────────────────────────────────────────────────
+
+def generate_code(blueprint: str, codebase: str, task: dict, plan: str) -> dict:
+    code_system = """You are an expert TypeScript/Next.js engineer building Ismael Agent World.
+
+STRICT RULES — failure on any of these blocks the PR:
+- TypeScript strict mode. Zero `any`. Full explicit types everywhere.
+- Next.js 15 App Router. No pages directory. No `getServerSideProps`.
+- Tailwind CSS only — no inline styles, no CSS modules.
+- Framer Motion for ALL animations. Animations must reflect agent state, not be decorative.
+- shadcn/ui component patterns.
+- Mock/seed data only in Phase 1 — no real API calls, no fetch() to external services.
+- Premium dark UI: bg-slate-950 or bg-navy-950, teal/blue accents (#0abf9f, #3b82f6).
+- NOT a generic admin dashboard. Must feel like a private AI command center.
+- Max 200 lines per file. If larger, split into sub-components.
+- No TODO comments. No placeholder text. No console.log in production code.
+- All imports must be real and resolvable.
+- Use `@/` path aliases throughout.
+- Output ONLY valid JSON. No commentary outside the JSON block."""
+
+    code_prompt = f"""
+TASK: {task['task_name']}
+WHY: {task['why_now']}
+FILES TO CREATE: {task.get('files_to_create', [])}
+
+BLUEPRINT (key sections):
+{blueprint[:6000]}
+
+CURRENT CODEBASE:
+{codebase[:2500]}
+
+BUILD PLAN CONTEXT:
+{plan[:1000]}
+
+Generate ALL files completely. No partial files. No TODOs.
+Max {MAX_FILES_PER_PR} files, max {MAX_LINES_PER_FILE} lines each.
+If a component would be >200 lines, split it into sub-components automatically.
+
+```json
+{{
+  "task_name": "{task['task_name']}",
+  "rationale": "Why this is built this way",
+  "branch_name": "agent/ph{PHASE_INPUT}-task{task.get('task_number',0)}-<slug>",
+  "pr_title": "[Agent Ph{PHASE_INPUT}] Task {task.get('task_number',0)}: {task['task_name']}",
+  "commit_message": "feat: <specific message>",
   "files": [
     {{
-      "path": "relative/path/file.ts",
-      "content": "complete file content"
+      "path": "path/to/file.tsx",
+      "content": "complete file content",
+      "line_count": 0
     }}
   ],
-  "next_suggested_task": "What should come after this"
+  "complexity_notes": "What was kept simple on purpose",
+  "next_suggested_task": "Task name that should come next"
 }}
 ```
 """
     raw = call_claude(code_prompt, code_system, max_tokens=8000)
-    plan = parse_json_response(raw)
+    return parse_json(raw)
 
-    branch    = plan["branch_name"]
-    files     = plan["files"]
-    task_name = plan["task_name"]
+# ── Step 4: Complexity Check ─────────────────────────────────────────────────
 
-    print(f"\n✅ Task: {task_name}")
-    print(f"   Branch: {branch} | Files: {len(files)}")
-    for f in files:
-        print(f"   - {f['path']} ({len(f['content'])} chars)")
+def check_complexity(files: list) -> tuple[int, str]:
+    files_preview = "\n".join([f"### {f['path']}\n{f['content'][:300]}" for f in files[:5]])
+    result = call_openai(f"""
+Rate the complexity of this code for a solo non-technical user to maintain (1=very simple, 10=very complex).
 
-    # ── Step 4: GPT-4o QA review (catch obvious issues) ───────────────────────
-    print("\n🔍 Step 4: GPT-4o — QA review...")
-    files_summary = "\n".join([f"### {f['path']}\n{f['content'][:400]}" for f in files])
-    qa_result = call_openai(
-        f"QA review these TypeScript/Next.js files for: type errors, missing imports, "
-        f"broken JSX, undefined variables, animation correctness. "
-        f"Reply with PASS or list specific issues (max 5 bullets).\n\n{files_summary[:3000]}",
-        "You are a TypeScript/Next.js code reviewer. Be concise and specific.",
-        max_tokens=400)
-    print(f"   QA: {(qa_result or 'skipped')[:200]}")
+Context: This is Ismael Agent World — a private AI command center. The owner is a non-technical solo founder.
 
-    # ── Step 5: GPT-4o writes PR description ─────────────────────────────────
-    print("\n📝 Step 5: GPT-4o — PR description...")
-    pr_body = call_openai(
-        f"Write a clear GitHub PR description for this change.\n"
-        f"Task: {task_name}\nRationale: {plan['rationale']}\n"
-        f"Files: {[f['path'] for f in files]}\nQA result: {qa_result or 'not run'}\n\n"
-        f"Format: ## What | ## Why | ## Files | ## QA | ## Next",
-        "You are a senior engineer writing a GitHub PR description. Be clear and direct.",
-        max_tokens=500)
-    if not pr_body:
-        pr_body = f"## {task_name}\n\n{plan['rationale']}\n\nFiles: {[f['path'] for f in files]}"
-    pr_body += "\n\n---\n*Auto-generated by Orchestrator (Claude + GPT-4o + Grok)*"
+Files:
+{files_preview}
 
-    # ── Step 6: Push + PR + Auto-merge ───────────────────────────────────────
-    print(f"\n🌿 Creating branch {branch}...")
-    create_branch(branch)
-    time.sleep(1)
+Consider:
+- Are there too many abstractions?
+- Is the state management clear?
+- Can someone unfamiliar with the codebase understand what each file does?
+- Are components focused and single-purpose?
 
-    print("📁 Pushing files...")
-    push_files_to_branch(branch, files, plan["commit_message"])
+Reply with JSON:
+```json
+{{
+  "score": 6,
+  "issues": ["issue 1", "issue 2"],
+  "simplifications": ["simplification 1", "simplification 2"]
+}}
+```
+""", "You are a code complexity reviewer focused on maintainability for solo developers.", max_tokens=500)
+    try:
+        data = parse_json(result)
+        return data.get("score", 5), json.dumps(data)
+    except:
+        return 5, "{}"
 
-    print("🔀 Opening PR with auto-merge...")
-    pr = create_pr_with_automerge(branch, plan["pr_title"], pr_body)
-    pr_url = pr.get("html_url", "unknown")
-    pr_num = pr.get("number", 0)
-    print(f"   PR #{pr_num}: {pr_url}")
+def simplify_code(files: list, complexity_notes: str) -> list:
+    print(f"   Complexity too high. Claude simplifying...")
+    files_str = json.dumps([{"path": f["path"], "content": f["content"]} for f in files])
 
-    # ── Step 7: Update state ──────────────────────────────────────────────────
-    state["completed_tasks"].append({
-        "task": task_name,
-        "branch": branch,
-        "pr": pr_num,
-        "pr_url": pr_url,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "files": [f["path"] for f in files],
-        "qa": (qa_result or "")[:200],
-        "next_suggested": plan.get("next_suggested_task", ""),
-    })
-    state["last_run"]   = datetime.now(timezone.utc).isoformat()
-    state["total_runs"] = state.get("total_runs", 0) + 1
-    state["open_prs"]   = get_open_prs()
+    result = call_claude(f"""
+These files are too complex (score > {COMPLEXITY_LIMIT}/10) for a solo non-technical user.
 
-    save_state_to_repo(state)
+Complexity issues: {complexity_notes}
 
-    print(f"\n🎯 Done! Run #{state['total_runs']} complete.")
-    print(f"   PR #{pr_num} → auto-merges when CI passes.")
-    print(f"   Next: {plan.get('next_suggested_task','')}")
+Files:
+{files_str[:6000]}
 
-if __name__ == "__main__":
-    main()
+Simplify them:
+- Remove unnecessary abstractions
+- Flatten component hierarchy where possible
+- Use simpler state patterns (useState over complex reducers)
+- Keep each file under 200 lines
+- Keep all functionality intact — just make it clearer
+
+Output the simplified files in the same JSON format:
+```json
+{{"files": [{{"path": "...", "content": "..."}}]}}
+```
+""", "You are a senior engineer simplifying code for maintainability. Keep all features, reduce complexity.", max_tokens=8000)
+
+    data = parse_json(result)
+    return data.get("files", files)
+
+# ── Step 5: QA Review ────────────────────────────────────────────────────────
+
+def qa_review(files: list, task_name: str) -> str:
+    files_preview = "\n\n".join([f"### {f['path']}\n{f['content'][:500]}" for f in files[:6]])
+    return call_openai(f"""
+QA review for: {task_name}
+
+Check each file for:
+1. TypeScript errors (missing types, implicit any, undefined variables)
+2. Missing or wrong imports
+3. Broken JSX (unclosed tags, invalid props)
+4. Next.js 15 App Router violations (wrong use of 'use client', server components issues)
+5. Framer Motion misuse (wrong prop names, missing variants)
+6. Tailwind classes that don't exist
+
+Reply: PASS or list specific issues with file name and line reference.
+Max 6 bullets if issues found.
+
+Files:
+{files_preview}
+""", "You are a strict TypeScript/Next.js code reviewer. Be specific and concise.", max_tokens=500)
+
+# ── Main ──────────────────────────
