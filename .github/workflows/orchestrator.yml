@@ -1,0 +1,70 @@
+name: Autonomous Orchestrator
+
+on:
+  workflow_dispatch:
+    inputs:
+      focus:
+        description: 'What to build next (leave empty = auto-decide)'
+        required: false
+        default: ''
+      phase:
+        description: 'Phase to work on'
+        required: false
+        default: '1'
+        type: choice
+        options: ['1', '2']
+  schedule:
+    # Runs every weekday at 7am UTC — builds one PR per day automatically
+    - cron: '0 7 * * 1-5'
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests --break-system-packages -q
+
+      - name: Configure git
+        run: |
+          git config --global user.name "Orchestrator Agent"
+          git config --global user.email "agent@ismael-agent-world.ai"
+
+      - name: Run Orchestrator
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+          GROK_API_KEY:      ${{ secrets.GROK_API_KEY }}
+          GH_PAT:            ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          REPO_OWNER:        ${{ github.repository_owner }}
+          REPO_NAME:         ismael-agent-world
+          FOCUS_INPUT:       ${{ inputs.focus }}
+          PHASE_INPUT:       ${{ inputs.phase || '1' }}
+        run: python .github/scripts/orchestrator.py
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Orchestrator Run Complete" >> $GITHUB_STEP_SUMMARY
+          echo "Phase: ${{ inputs.phase || '1' }}" >> $GITHUB_STEP_SUMMARY
+          echo "Focus: ${{ inputs.focus || 'auto' }}" >> $GITHUB_STEP_SUMMARY
+          if [ -f .github/agent-state.json ]; then
+            RUNS=$(cat .github/agent-state.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('total_runs',0))")
+            echo "Total runs: $RUNS" >> $GITHUB_STEP_SUMMARY
+          fi
