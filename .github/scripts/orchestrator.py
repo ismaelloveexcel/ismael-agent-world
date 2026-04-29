@@ -584,7 +584,7 @@ Verify every import path against the CURRENT CODEBASE above.
 {{
   "task_name": "{task_name}",
   "rationale": "Why this is implemented this way",
-  "branch_name": "agent/ph{PHASE_INPUT}-t{task_num}-{{}slug{{}}}",
+  "branch_name": "agent/ph{PHASE_INPUT}-t{task_num}-{{slug}}",
   "pr_title": "[Agent Ph{PHASE_INPUT}] Task {task_num}: {task_name}",
   "commit_message": "feat: specific description of what was built",
   "files": [
