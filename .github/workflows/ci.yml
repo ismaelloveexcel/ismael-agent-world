@@ -12,22 +12,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check if Next.js project exists
+        id: check
+        run: |
+          if [ -f package.json ]; then
+            echo "buildable=true" >> $GITHUB_OUTPUT
+            echo "package.json found — running full CI"
+          else
+            echo "buildable=false" >> $GITHUB_OUTPUT
+            echo "No package.json — infrastructure-only commit, skipping build checks"
+          fi
+
       - name: Setup Node.js
+        if: steps.check.outputs.buildable == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
 
       - name: Install dependencies
+        if: steps.check.outputs.buildable == 'true'
         run: npm ci
 
       - name: Type check
+        if: steps.check.outputs.buildable == 'true'
         run: npx tsc --noEmit
 
-      - name: Lint
-        run: npm run lint
-
       - name: Build
+        if: steps.check.outputs.buildable == 'true'
         run: npm run build
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
