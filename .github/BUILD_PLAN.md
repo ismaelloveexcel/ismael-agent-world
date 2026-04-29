@@ -20,7 +20,7 @@ Total tasks: 23. Key changes: Added Task 3a (UI primitives/shadcn setup) before 
 
 ---
 
-## Task 1: Setup Project Structure and Configuration | Phase: 1 | Files: tsconfig.json, package.json, next.config.ts, next-env.d.ts | Depends on: None
+## Task 1: Setup Project Structure and Configuration | Phase: 1 | Files: tsconfig.json, package.json, next.config.ts, next-env.d.ts | Depends on: None [DONE]
 
 1. Initialize the monorepo directory (`ismael-agent-world/apps/web`) and configure TypeScript with strict mode, path aliases (`@/*`), and Next.js plugin.
 2. Add all required dependencies to `package.json`: Next.js 15, React 19, shadcn/ui, Framer Motion, Supabase JS client, Tailwind CSS, and dev tooling.
