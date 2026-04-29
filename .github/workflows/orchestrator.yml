@@ -1,57 +1,49 @@
 name: Orchestrator
 
 on:
-  # Auto-trigger: runs after any agent PR is merged into main
   pull_request:
     types: [closed]
     branches: [main]
-
-  # Manual trigger (for first run or re-running a specific phase/focus)
   workflow_dispatch:
     inputs:
       focus:
-        description: "Focus area (optional — e.g. 'landing page', 'agents panel')"
+        description: "Focus area (leave blank for auto)"
         required: false
         default: ""
       phase:
-        description: "Phase to work on (1 or 2)"
+        description: "Phase (1-5)"
         required: false
         default: "1"
-
-  # Fallback schedule: weekdays 7am UTC in case auto-trigger misses
   schedule:
     - cron: "0 7 * * 1-5"
 
+concurrency:
+  group: orchestrator
+  cancel-in-progress: false
+
 jobs:
   orchestrate:
-    # For PR events: only run if it was an agent PR that was merged
     if: >
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.merged == true &&
        startsWith(github.event.pull_request.head.ref, 'agent/'))
-
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
       pull-requests: write
       issues: write
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install requests --quiet
-
+      - run: pip install requests --quiet
       - name: Run orchestrator
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

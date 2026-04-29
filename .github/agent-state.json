@@ -1,10 +1,11 @@
 {
-  "version": 1,
+  "version": 3,
   "phase": 1,
   "completed_tasks": [],
-  "in_progress": null,
   "open_prs": [],
   "last_run": null,
   "total_runs": 0,
-  "notes": "Orchestrator state — updated automatically after each run."
+  "plan_created": false,
+  "repo_ready": false,
+  "notes": "Reset for v2 architecture \u2014 real orchestration engine, tool layer, memory system."
 }
