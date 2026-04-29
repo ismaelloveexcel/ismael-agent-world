@@ -43,7 +43,7 @@ Total tasks: 23. Key changes: Added Task 3a (UI primitives/shadcn setup) before 
 
 ---
 
-## Task 4: Create Mock Data and Utility Helpers | Phase: 1 | Files: lib/mockData.ts, lib/utils.ts | Depends on: Task 3
+## Task 4: Create Mock Data and Utility Helpers | Phase: 1 | Files: lib/mockData.ts, lib/utils.ts | Depends on: Task 3 [DONE]
 
 1. Populate `mockData.ts` with realistic seed arrays for each domain type defined in `lib/types.ts` (agents, tasks, memory entries, playbooks, approvals, logs, projects).
 2. Implement `lib/utils.ts` with the `cn()` class-merge helper (clsx + tailwind-merge) and any shared date/status formatting utilities consumed by components.
