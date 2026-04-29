@@ -36,7 +36,7 @@ Total tasks: 23. Key changes: Added Task 3a (UI primitives/shadcn setup) before 
 
 ---
 
-## Task 3: Define Shared TypeScript Types | Phase: 1 | Files: lib/types.ts | Depends on: Task 1
+## Task 3: Define Shared TypeScript Types | Phase: 1 | Files: lib/types.ts | Depends on: Task 1 [DONE]
 
 1. Define all domain types used across UI and API boundary: `Agent`, `AgentStatus`, `Task`, `TaskStatus`, `MemoryEntry`, `Playbook`, `ApprovalItem`, `LogEntry`, `Project`, `CommandRequest`, `CommandResponse`.
 2. Export every type from a single barrel so imports stay clean throughout the codebase.

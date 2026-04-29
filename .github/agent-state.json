@@ -37,19 +37,33 @@
       "complexity": 4,
       "qa": "ISSUES:\n\n1. **`tailwind.config.ts` - Line 18**: There is a missing closing bracket `}` for the `colors` object within the `theme.extend` section.\n   \n",
       "next": "Build Root Layout, Sidebar Navigation, and ThemeProvider (app/layout.tsx, components/layout/Sidebar.tsx, components/layout/Header.tsx)"
+    },
+    {
+      "task": "Define Shared TypeScript Types",
+      "task_num": 3,
+      "branch": "agent/ph1-t3-shared-types",
+      "pr": 13,
+      "pr_url": "https://github.com/ismaelloveexcel/ismael-agent-world/pull/13",
+      "date": "2026-04-29",
+      "files": [
+        "lib/types.ts"
+      ],
+      "complexity": 4,
+      "qa": "PASS \u2014 The shared TypeScript types for defining `AgentStatus` and `AgentRole` are correctly implemented with no issues found.",
+      "next": "Create Mock Seed Data (lib/mock-data.ts) implementing all types defined here, so every page and component has realistic data to render in Phase 1."
     }
   ],
   "open_prs": [
     {
-      "number": 12,
-      "title": "[Agent Ph1] Task 2: Configure Tailwind, Global Styles, and shadcn/ui Primitives",
-      "branch": "agent/ph1-t2-tailwind-styles-primitives",
-      "created_at": "2026-04-29T05:37:15Z",
-      "node_id": "PR_kwDOSPIDW87WlwH8"
+      "number": 13,
+      "title": "[Agent Ph1] Task 3: Define Shared TypeScript Types",
+      "branch": "agent/ph1-t3-shared-types",
+      "created_at": "2026-04-29T05:38:49Z",
+      "node_id": "PR_kwDOSPIDW87Wlxi_"
     }
   ],
-  "last_run": "2026-04-29T05:37:17.693974+00:00",
-  "total_runs": 2,
+  "last_run": "2026-04-29T05:38:51.165667+00:00",
+  "total_runs": 3,
   "plan_created": true,
   "repo_ready": true,
   "notes": "Reset for v2 architecture \u2014 real orchestration engine, tool layer, memory system."
