@@ -28,7 +28,7 @@ Total tasks: 23. Key changes: Added Task 3a (UI primitives/shadcn setup) before 
 
 ---
 
-## Task 2: Configure Tailwind, Global Styles, and shadcn/ui Primitives | Phase: 1 | Files: tailwind.config.ts, app/globals.css, components/ui/button.tsx, components/ui/card.tsx, components/ui/badge.tsx | Depends on: Task 1
+## Task 2: Configure Tailwind, Global Styles, and shadcn/ui Primitives | Phase: 1 | Files: tailwind.config.ts, app/globals.css, components/ui/button.tsx, components/ui/card.tsx, components/ui/badge.tsx | Depends on: Task 1 [DONE]
 
 1. Configure Tailwind CSS with the dark-mode `class` strategy, custom color tokens (background, foreground, accent), and the shadcn/ui content paths.
 2. Write `globals.css` with CSS variable definitions for the dark theme and base resets.
